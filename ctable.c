@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #define NODECACHE "_ctable"
+#define PROXYCACHE "_proxy"
 #define TABLES "_ctables"
 
 #define VALUE_NIL 0
@@ -12,6 +13,8 @@
 #define VALUE_TABLE 4
 #define VALUE_STRING 5
 #define VALUE_INVALID 6
+
+#define INVALID_OFFSET 0xffffffff
 
 struct proxy {
 	const char * data;
@@ -36,12 +39,18 @@ struct table {
 
 static inline const struct table *
 gettable(const struct document *doc, int index) {
+	if (doc->index[index] == INVALID_OFFSET) {
+		return NULL;
+	}
 	return (const struct table *)((const char *)doc + sizeof(uint32_t) + sizeof(uint32_t) + doc->n * sizeof(uint32_t) + doc->index[index]);
 }
 
 static void
 create_proxy(lua_State *L, const void *data, int index) {
 	const struct table * t = gettable(data, index);
+	if (t == NULL) {
+		luaL_error(L, "Invalid index %d", index);
+	}
 	lua_getfield(L, LUA_REGISTRYINDEX, NODECACHE);
 	if (lua_rawgetp(L, -1, t) == LUA_TTABLE) {
 		lua_replace(L, -2);
@@ -54,14 +63,108 @@ create_proxy(lua_State *L, const void *data, int index) {
 	lua_pushvalue(L, -1);
 	// NODECACHE, table, table
 	lua_rawsetp(L, -3, t);
-	lua_pushvalue(L, -1);
+	// NODECACHE, table
+	lua_getfield(L, LUA_REGISTRYINDEX, PROXYCACHE);
+	// NODECACHE, table, PROXYCACHE
+	lua_pushvalue(L, -2);
+	// NODECACHE, table, PROXYCACHE, table
 	struct proxy * p = lua_newuserdata(L, sizeof(struct proxy));
+	// NODECACHE, table, PROXYCACHE, table, proxy
 	p->data = data;
 	p->index = index;
-	// NODECACHE, table, table, proxy
-	lua_rawset(L, -4);
+	lua_rawset(L, -3);
+	// NODECACHE, table, PROXYCACHE
+	lua_pop(L, 1);
+	// NODECACHE, table
 	lua_replace(L, -2);
 	// table
+}
+
+static void
+clear_table(lua_State *L) {
+	int t = lua_gettop(L);	// clear top table
+	if (lua_type(L, t) != LUA_TTABLE) {
+		luaL_error(L, "Invalid cache");
+	}
+	lua_pushnil(L);
+	while (lua_next(L, t) != 0) {
+		// key value
+		lua_pop(L, 1);
+		lua_pushvalue(L, -1);
+		lua_pushnil(L);
+		// key key nil
+		lua_rawset(L, t);
+		// key
+	}
+}
+
+static void
+update_cache(lua_State *L, const void *data, const void * newdata) {
+	lua_getfield(L, LUA_REGISTRYINDEX, NODECACHE);
+	int t = lua_gettop(L);
+	lua_getfield(L, LUA_REGISTRYINDEX, PROXYCACHE);
+	int pt = t + 1;
+	lua_newtable(L);	// temp table
+	int nt = pt + 1;
+	lua_pushnil(L);
+	while (lua_next(L, t) != 0) {
+		// pointer (-2) -> table (-1)
+		lua_pushvalue(L, -1);
+		if (lua_rawget(L, pt) == LUA_TUSERDATA) {
+			// pointer, table, proxy
+			struct proxy * p = lua_touserdata(L, -1);
+			if (p->data == data) {
+				// update to newdata
+				p->data = newdata;
+				const struct table * newt = gettable(newdata, p->index);
+				lua_pop(L, 1);
+				// pointer, table
+				clear_table(L);
+				lua_pushvalue(L, lua_upvalueindex(1));
+				// pointer, table, meta
+				lua_setmetatable(L, -2);
+				// pointer, table
+				if (newt) {
+					lua_rawsetp(L, nt, newt);
+				} else {
+					lua_pop(L, 1);
+				}
+				// pointer
+				lua_pushvalue(L, -1);
+				lua_pushnil(L);
+				lua_rawset(L, t);
+			} else {
+				lua_pop(L, 2);
+			}
+		} else {
+			lua_pop(L, 2);
+			// pointer
+		}
+	}
+	// copy nt to t
+	lua_pushnil(L);
+	while (lua_next(L, nt) != 0) {
+		lua_pushvalue(L, -2);
+		lua_insert(L, -2);
+		// key key value
+		lua_rawset(L, t);
+	}
+	// NODECACHE PROXYCACHE TEMP
+	lua_pop(L, 3);
+}
+
+static int
+lupdate(lua_State *L) {
+	lua_getfield(L, LUA_REGISTRYINDEX, PROXYCACHE);
+	lua_pushvalue(L, 1);
+	// PROXYCACHE, table
+	if (lua_rawget(L, -2) != LUA_TUSERDATA) {
+		luaL_error(L, "Invalid proxy table %p", lua_topointer(L, 1));
+	}
+	struct proxy * p = lua_touserdata(L, -1);
+	const char * newdata = luaL_checkstring(L, 2);
+	update_cache(L, p->data, newdata);
+	return 1;
 }
 
 static inline uint32_t
@@ -126,9 +229,12 @@ static void
 copytable(lua_State *L, int tbl, struct proxy *p) {
 	const struct document * doc = (const struct document *)p->data; 
 	if (p->index < 0 || p->index >= doc->n) {
-		luaL_error(L, "Invalid index %d (%d)", p->index, (int)doc->n);
+		luaL_error(L, "Invalid proxy (index = %d, total = %d)", p->index, (int)doc->n);
 	}
 	const struct table * t = gettable(doc, p->index);
+	if (t == NULL) {
+		luaL_error(L, "Invalid proxy (index = %d)", p->index);
+	}
 	const uint32_t * v = (const uint32_t *)((const char *)t + sizeof(uint32_t) + sizeof(uint32_t) + ((t->array + t->dict + 3) & ~3));
 	int i;
 	for (i=0;i<t->array;i++) {
@@ -145,6 +251,7 @@ copytable(lua_State *L, int tbl, struct proxy *p) {
 static int
 lnew(lua_State *L) {
 	const char * data = luaL_checkstring(L, 1);
+	// hold ref to data
 	lua_getfield(L, LUA_REGISTRYINDEX, TABLES);
 	lua_pushvalue(L, 1);
 	lua_rawsetp(L, -2, data);
@@ -155,9 +262,9 @@ lnew(lua_State *L) {
 
 static void
 copyfromdata(lua_State *L) {
-	lua_getfield(L, LUA_REGISTRYINDEX, NODECACHE);
+	lua_getfield(L, LUA_REGISTRYINDEX, PROXYCACHE);
 	lua_pushvalue(L, 1);
-	// NODECACHE, table
+	// PROXYCACHE, table
 	if (lua_rawget(L, -2) != LUA_TUSERDATA) {
 		luaL_error(L, "Invalid proxy table %p", lua_topointer(L, 1));
 	}
@@ -203,16 +310,23 @@ llen(lua_State *L) {
 	return 1;
 }
 
-LUAMOD_API int
-luaopen_ctable(lua_State *L) {
-	luaL_checkversion(L);
-
-	lua_newtable(L);	// cache
+static void
+gen_metatable(lua_State *L) {
 	lua_createtable(L, 0, 1);	// weak meta table
 	lua_pushstring(L, "kv");
 	lua_setfield(L, -2, "__mode");
+
+	lua_newtable(L);	// NODECACHE
+	lua_pushvalue(L, -2);
 	lua_setmetatable(L, -2);	// make NODECACGE weak
 	lua_setfield(L, LUA_REGISTRYINDEX, NODECACHE);
+
+	lua_newtable(L);	// PROXYCACHE
+	lua_pushvalue(L, -2);
+	lua_setmetatable(L, -2);	// make NODECACGE weak
+	lua_setfield(L, LUA_REGISTRYINDEX, PROXYCACHE);
+
+	lua_pop(L, 1);	// pop weak meta
 
 	lua_newtable(L);
 	lua_setfield(L, LUA_REGISTRYINDEX, TABLES);
@@ -228,7 +342,19 @@ luaopen_ctable(lua_State *L) {
 	};
 	lua_pushvalue(L, -1);
 	luaL_setfuncs(L, l, 1);
-	lua_pushcclosure(L, lnew, 1);
-	lua_setfield(L, -2, "new");
+}
+
+LUAMOD_API int
+luaopen_ctable(lua_State *L) {
+	luaL_checkversion(L);
+	luaL_Reg l[] = {
+		{ "new", lnew },
+		{ "update", lupdate },
+		{ NULL, NULL },
+	};
+
+	luaL_newlibtable(L,l);
+	gen_metatable(L);
+	luaL_setfuncs(L, l, 1);
 	return 1;
 }

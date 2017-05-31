@@ -53,3 +53,49 @@ local t3 = ctable.new(d)
 print("#.a", #t3.a)
 
 dump(t3,"")
+
+----------------
+
+local t1 = {
+	a = {1},
+	b = {2},
+	c = {3},
+}
+
+local t2 = {
+	-- remove a
+	b = {1},
+	c = {2},
+	d = {3},
+}
+
+local b1 = ctd.dump(t1)
+local b2 = ctd.dump(t2)
+
+local diff = ctd.diff(b1,b2)
+
+t1 = ctd.undump(b1)
+t2 = ctd.undump(b2)
+dump(t1, "[1]")
+dump(t2, "[2]")
+local t = ctd.undump(diff)
+
+assert(eq(t2,t))
+
+dump(t, "DIFF")
+
+local o1 = ctable.new(b1)
+local b = o1.b
+local a = o1.a
+print(".a[1]=", a[1])
+print(".b[1]=", b[1])
+ctable.update(b, diff)
+print("update.b[1]=", b[1])
+print("update.d[1]=", o1.d[1])
+
+local function geta1()
+	return a[1]
+end
+assert(pcall(geta1) == false) -- a is removed
+
+

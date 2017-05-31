@@ -134,6 +134,7 @@ function ctd.undump(v)
 	local index = { string.unpack("<" .. string.rep("I4", n), v, 9) }
 	local header = 4 + 4 + 4 * n + 1
 	stringtbl = stringtbl + 1
+	local tblidx = {}
 	local function decode(n)
 		local toffset = index[n+1] + header
 		local array, dict = string.unpack("<I4I4", v, toffset)
@@ -168,9 +169,102 @@ function ctd.undump(v)
 			local key = string.unpack("z", v, stringtbl + sindex)
 			result[key] = value(types[array + i])
 		end
+		tblidx[result] = n
 		return result
 	end
-	return decode(0)
+	return decode(0), tblidx
+end
+
+local function diffmap(last, current)
+	local lastv, lasti = ctd.undump(last)
+	local curv, curi = ctd.undump(current)
+	local map = {}	-- new(current index):old(last index)
+	local function comp(lastr, curr)
+		local old = lasti[lastr]
+		local new = curi[curr]
+		map[new] = old
+		for k,v in pairs(lastr) do
+			if type(v) == "table" then
+				local newv = curr[k]
+				if type(newv) == "table" then
+					comp(v, newv)
+				end
+			end
+		end
+	end
+	comp(lastv, curv)
+	return map
+end
+
+function ctd.diff(last, current)
+	local map = diffmap(last, current)
+	local stringtbl, n = string.unpack("<I4I4",current)
+	local _, lastn = string.unpack("<I4I4",last)
+	local existn = 0
+	for k,v in pairs(map) do
+		existn = existn + 1
+	end
+	local newn = lastn
+	for i = 0, n-1 do
+		if not map[i] then
+			map[i] = newn
+			newn = newn + 1
+		end
+	end
+	-- remap current
+	local index = { string.unpack("<" .. string.rep("I4", n), current, 9) }
+	local header = 4 + 4 + 4 * n + 1
+	local function remap(n)
+		local toffset = index[n+1] + header
+		local array, dict = string.unpack("<I4I4", current, toffset)
+		local types = { string.unpack(string.rep("B", (array+dict)), current, toffset + 8) }
+		local hlen = (array + dict + 8 + 3) & ~3
+		local hastable = false
+		for _, v in ipairs(types) do
+			if v == 4 then -- table
+				hastable = true
+				break
+			end
+		end
+		if not hastable then
+			return string.sub(current, toffset, toffset + hlen + (array + dict * 2) * 4 - 1)
+		end
+		local offset = hlen + toffset
+		local pat = "<" .. string.rep("I4", array + dict * 2)
+		local values = { string.unpack(pat, current, offset) }
+		for i = 1, array do
+			if types[i] == 4 then	-- table
+				values[i] = map[values[i]]
+			end
+		end
+		for i = 1, dict do
+			if types[i + array] == 4 then -- table
+				values[array + i * 2] = map[values[array + i * 2]]
+			end
+		end
+		return string.sub(current, toffset, toffset + hlen - 1) ..
+			string.pack(pat, table.unpack(values))
+	end
+	-- rebuild
+	local oldindex = { string.unpack("<" .. string.rep("I4", n), current, 9) }
+	local index = {}
+	for i = 1, newn do
+		index[i] = 0xffffffff
+	end
+	for i = 0, #map do
+		index[map[i]+1] = oldindex[i+1]
+	end
+
+	local tmp = {
+		string.pack("<I4I4", stringtbl + (newn - n) * 4, newn), -- expand index table
+		string.pack("<" .. string.rep("I4", newn), table.unpack(index)),
+	}
+	for i = 0, n - 1 do
+		table.insert(tmp, remap(i))
+	end
+	table.insert(tmp, string.sub(current, stringtbl+1))
+
+	return table.concat(tmp)
 end
 
 return ctd
