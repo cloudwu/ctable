@@ -226,6 +226,26 @@ pushvalue(lua_State *L, const void *v, int type, const struct document * doc) {
 }
 
 static void
+pushkey(lua_State *L,  const void *v, const struct document *doc) {
+	const char * key = (const char *)doc + doc->strtbl + getuint32(v);
+#ifdef NUMBERIC_KEY
+	int nkey = 0;
+	int i;
+	for (i=0;key[i];i++) {
+		if (key[i] >= '0' && key[i] <='9') {
+			nkey = nkey * 10 + (key[i]-'0');
+		} else {
+			lua_pushstring(L, key);
+			return;
+		}
+	}
+	lua_pushinteger(L, nkey);
+#else
+	lua_pushstring(L, key);
+#endif
+}
+
+static void
 copytable(lua_State *L, int tbl, struct proxy *p) {
 	const struct document * doc = (const struct document *)p->data; 
 	if (p->index < 0 || p->index >= doc->n) {
@@ -242,7 +262,7 @@ copytable(lua_State *L, int tbl, struct proxy *p) {
 		lua_rawseti(L, tbl, i+1);
 	}
 	for (i=0;i<t->dict;i++) {
-		pushvalue(L, v++, VALUE_STRING, doc);
+		pushkey(L, v++, doc);
 		pushvalue(L, v++, t->type[t->array+i], doc);
 		lua_rawset(L, tbl);
 	}
