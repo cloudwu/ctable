@@ -354,7 +354,7 @@ gen_metatable(lua_State *L) {
 
 	lua_createtable(L, 0, 1);	// mod table
 
-	lua_createtable(L, 0, 2);	// metatable
+	lua_createtable(L, 0, 3);	// metatable
 	luaL_Reg l[] = {
 		{ "__index", lindex },
 		{ "__pairs", lpairs },
