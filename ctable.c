@@ -176,7 +176,7 @@ getuint32(const void *v) {
 	if (test.t[0] == 0) {
 		// big endian
 		test.d = *(const uint32_t *)v;
-		return test.t[0] | test.t[1] << 4 | test.t[2] << 8 | test.t[3] << 12;
+		return test.t[0] | test.t[1] << 8 | test.t[2] << 16 | test.t[3] << 24;
 	} else {
 		return *(const uint32_t *)v;
 	}
@@ -192,7 +192,7 @@ getfloat(const void *v) {
 	if (test.t[0] == 0) {
 		// big endian
 		test.d = *(const uint32_t *)v;
-		test.d = test.t[0] | test.t[1] << 4 | test.t[2] << 8 | test.t[3] << 12;
+		test.d = test.t[0] | test.t[1] << 8 | test.t[2] << 16 | test.t[3] << 24;
 		return test.f;
 	} else {
 		return *(const float *)v;
