@@ -37,6 +37,7 @@ local ctd = {}
 local math = math
 local table = table
 local string = string
+local MAX_INT = 1 << 31
 
 function ctd.dump(root)
 	local doc = {
@@ -59,7 +60,7 @@ function ctd.dump(root)
 				local index = dump_table(v)
 				return '\4', string.pack("<i4", index-1)
 			elseif t == "number" then
-				if math.tointeger(v) then
+				if math.tointeger(v) and math.abs(v) < MAX_INT then
 					return '\1', string.pack("<i4", v)
 				else
 					return '\2', string.pack("<f",v)
